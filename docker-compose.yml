@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  data-service:
+    build: ./services/data-service
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+    volumes:
+      - ./services/data-service/src:/app/src
+    restart: unless-stopped
+
+  frontend:
+    build: ./services/frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_WS_URL=ws://localhost:3001
+    volumes:
+      - ./services/frontend/src:/app/src
+      - ./services/frontend/index.html:/app/index.html
+    depends_on:
+      - data-service
+    restart: unless-stopped
