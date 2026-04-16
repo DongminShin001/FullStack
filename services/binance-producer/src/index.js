@@ -1,6 +1,5 @@
-const WebSocket  = require('ws');
+const WebSocket   = require('ws');
 const StompClient = require('./stomp');
-const { generatePSD, generateCAF } = require('./dataGenerator');
 
 const ACTIVEMQ_HOST = process.env.ACTIVEMQ_HOST || 'localhost';
 const ACTIVEMQ_PORT = parseInt(process.env.ACTIVEMQ_PORT || '61613', 10);
