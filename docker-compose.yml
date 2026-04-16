@@ -2,35 +2,36 @@ version: '3.9'
 
 services:
 
-  # ── Message broker ───────────────────────────────────────────────
+  # ── Message broker ────────────────────────────────────────────────────────────
   activemq:
     image: apache/activemq-classic:5.18.3
     ports:
       - "61616:61616"   # OpenWire (JMS)
-      - "61613:61613"   # STOMP (what our Node services use)
-      - "8161:8161"     # Web admin UI  →  http://localhost:8161  (admin/admin)
+      - "61613:61613"   # STOMP — what our Node services use
+      - "8161:8161"     # Admin UI → http://localhost:8161  (admin/admin)
+                        #   Here you can see /topic/market.data,
+                        #   subscriber count, message rates, browse messages
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8161/api/jolokia/read/org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=satellite.data/QueueSize || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8161 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
     restart: unless-stopped
 
-  # ── Publishes fake satellite PSD/CAF data into the queue ─────────
-  satellite-producer:
-    build: ./services/satellite-producer
+  # ── Connects to Binance live WebSocket, publishes into the topic ─────────────
+  binance-producer:
+    build: ./services/binance-producer
     environment:
       - ACTIVEMQ_HOST=activemq
       - ACTIVEMQ_PORT=61613
-      - PUBLISH_INTERVAL_MS=200
     volumes:
-      - ./services/satellite-producer/src:/app/src
+      - ./services/binance-producer/src:/app/src
     depends_on:
       activemq:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Reads from queue, broadcasts to WebSocket clients ────────────
+  # ── Subscribes to topic, broadcasts to all WebSocket clients ─────────────────
   graph-consumer:
     build: ./services/graph-consumer
     ports:
@@ -46,24 +47,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Standalone data-service (no queue, for comparison) ───────────
-  data-service:
-    build: ./services/data-service
-    ports:
-      - "3001:3001"
-    environment:
-      - PORT=3001
-    volumes:
-      - ./services/data-service/src:/app/src
-    restart: unless-stopped
-
-  # ── React frontend ────────────────────────────────────────────────
+  # ── React frontend ────────────────────────────────────────────────────────────
   frontend:
     build: ./services/frontend
     ports:
       - "5173:5173"
     environment:
-      # Points to graph-consumer (the queue-backed WebSocket server)
       - VITE_WS_URL=ws://localhost:3002
     volumes:
       - ./services/frontend/src:/app/src
