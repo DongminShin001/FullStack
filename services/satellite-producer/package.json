@@ -1,0 +1,14 @@
+{
+  "name": "satellite-producer",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "stompit": "^0.27.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
