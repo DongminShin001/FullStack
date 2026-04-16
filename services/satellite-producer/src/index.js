@@ -1,64 +1,42 @@
-const stompit = require('stompit');
+const StompClient = require('./stomp');
 const { generatePSD, generateCAF } = require('./dataGenerator');
 
-const ACTIVEMQ_HOST = process.env.ACTIVEMQ_HOST || 'localhost';
-const ACTIVEMQ_PORT = parseInt(process.env.ACTIVEMQ_PORT || '61613', 10);
-const INTERVAL_MS   = parseInt(process.env.PUBLISH_INTERVAL_MS || '200', 10);
-const QUEUE         = '/queue/satellite.data';
-
-const connectOptions = {
-  host: ACTIVEMQ_HOST,
-  port: ACTIVEMQ_PORT,
-  connectHeaders: {
-    host: '/',
-    login: 'admin',
-    passcode: 'admin',
-    'heart-beat': '5000,5000',
-  },
-};
-
-function publish(client, type, payload) {
-  const frame = client.send({
-    destination: QUEUE,
-    'content-type': 'application/json',
-  });
-  frame.write(JSON.stringify({ type, payload, ts: Date.now() }));
-  frame.end();
-}
+const ACTIVEMQ_HOST   = process.env.ACTIVEMQ_HOST   || 'localhost';
+const ACTIVEMQ_PORT   = parseInt(process.env.ACTIVEMQ_PORT || '61613', 10);
+const INTERVAL_MS     = parseInt(process.env.PUBLISH_INTERVAL_MS || '200', 10);
+const TOPIC           = '/topic/satellite.data';
 
 let publishCount = 0;
 
-function startProducer() {
-  console.log(`[producer] connecting to ActiveMQ at ${ACTIVEMQ_HOST}:${ACTIVEMQ_PORT}…`);
+async function startProducer() {
+  console.log(`[producer] connecting to ActiveMQ ${ACTIVEMQ_HOST}:${ACTIVEMQ_PORT}…`);
+  const stomp = new StompClient(ACTIVEMQ_HOST, ACTIVEMQ_PORT, 'admin', 'admin');
 
-  stompit.connect(connectOptions, (err, client) => {
-    if (err) {
-      console.error(`[producer] connection failed: ${err.message} — retrying in 3s`);
-      setTimeout(startProducer, 3000);
-      return;
-    }
+  stomp.on('error', (err) => {
+    console.error('[producer] error:', err.message, '— retry in 3s');
+    setTimeout(startProducer, 3000);
+  });
 
-    console.log(`[producer] connected — publishing every ${INTERVAL_MS}ms to ${QUEUE}`);
+  stomp.on('close', () => {
+    console.log('[producer] connection closed — retry in 3s');
+    setTimeout(startProducer, 3000);
+  });
 
-    const timer = setInterval(() => {
-      try {
-        publish(client, 'psd', generatePSD());
-        publish(client, 'caf', generateCAF());
-        publishCount += 2;
-        if (publishCount % 50 === 0) {
-          console.log(`[producer] ${publishCount} messages published`);
-        }
-      } catch (e) {
-        console.error('[producer] publish error:', e.message);
-      }
+  try {
+    await stomp.connect();
+    console.log(`[producer] connected — publishing every ${INTERVAL_MS}ms to ${TOPIC}`);
+
+    setInterval(() => {
+      stomp.publish(TOPIC, JSON.stringify({ type: 'psd', payload: generatePSD(), ts: Date.now() }));
+      stomp.publish(TOPIC, JSON.stringify({ type: 'caf', payload: generateCAF(), ts: Date.now() }));
+      publishCount += 2;
+      if (publishCount % 50 === 0) console.log(`[producer] ${publishCount} messages published`);
     }, INTERVAL_MS);
 
-    client.on('error', (err) => {
-      console.error('[producer] connection error:', err.message);
-      clearInterval(timer);
-      setTimeout(startProducer, 3000);
-    });
-  });
+  } catch (err) {
+    console.error('[producer] connect failed:', err.message, '— retry in 3s');
+    setTimeout(startProducer, 3000);
+  }
 }
 
 startProducer();
