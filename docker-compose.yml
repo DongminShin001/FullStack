@@ -11,11 +11,6 @@ services:
       - "8161:8161"     # Admin UI → http://localhost:8161  (admin/admin)
                         #   Here you can see /topic/market.data,
                         #   subscriber count, message rates, browse messages
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8161 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
     restart: unless-stopped
 
   # ── Connects to Binance live WebSocket, publishes into the topic ─────────────
@@ -27,8 +22,7 @@ services:
     volumes:
       - ./services/binance-producer/src:/app/src
     depends_on:
-      activemq:
-        condition: service_healthy
+      - activemq
     restart: unless-stopped
 
   # ── Subscribes to topic, broadcasts to all WebSocket clients ─────────────────
@@ -43,8 +37,7 @@ services:
     volumes:
       - ./services/graph-consumer/src:/app/src
     depends_on:
-      activemq:
-        condition: service_healthy
+      - activemq
     restart: unless-stopped
 
   # ── React frontend ────────────────────────────────────────────────────────────
