@@ -1,24 +1,32 @@
+/**
+ * exchange-producer (formerly binance-producer)
+ *
+ * Uses Kraken WebSocket v2 — globally accessible, no API key needed.
+ * Binance returns 451 (geo-blocked) in South Korea and some other regions.
+ *
+ * Kraken WebSocket v2: wss://ws.kraken.com/v2
+ * Docs: https://docs.kraken.com/api/docs/websocket-v2/
+ *
+ * Publishes same normalized message format as before so graph-consumer
+ * and the rest of the pipeline need zero changes.
+ */
+
 const WebSocket   = require('ws');
 const StompClient = require('./stomp');
 
 const ACTIVEMQ_HOST = process.env.ACTIVEMQ_HOST || 'localhost';
 const ACTIVEMQ_PORT = parseInt(process.env.ACTIVEMQ_PORT || '61613', 10);
-const TOPIC         = '/topic/market.data';   // all messages → all subscribers
-const QUEUE         = '/queue/large.trades';  // large trades only → one worker at a time
+const TOPIC         = '/topic/market.data';
+const QUEUE         = '/queue/large.trades';
 
-// A "large trade" threshold — BTC qty > 0.5 or ETH qty > 5
-const LARGE_TRADE_THRESHOLDS = { BTCUSDT: 0.5, ETHUSDT: 5 };
+const LARGE_TRADE_THRESHOLDS = { 'BTC/USD': 0.5, 'ETH/USD': 5 };
 
-const STREAMS = [
-  'btcusdt@aggTrade',
-  'btcusdt@kline_1m',
-  'ethusdt@aggTrade',
-  'ethusdt@kline_1m',
-  'btcusdt@miniTicker',
-  'ethusdt@miniTicker',
-].join('/');
+// Kraken uses "BTC/USD" format — normalize to "BTCUSDT" to match existing frontend
+function toSymbol(krakenSymbol) {
+  return krakenSymbol.replace('/', '').replace('USD', 'USDT');
+}
 
-const BINANCE_URL = `wss://stream.binance.com:9443/stream?streams=${STREAMS}`;
+const KRAKEN_URL = 'wss://ws.kraken.com/v2';
 
 // ── ActiveMQ connection ───────────────────────────────────────────────────────
 
@@ -31,7 +39,7 @@ function publish(type, symbol, payload) {
     stomp.publish(TOPIC, JSON.stringify({ type, symbol, payload, ts: Date.now() }));
     publishCount++;
     if (publishCount % 200 === 0) {
-      console.log(`[producer] ${publishCount} messages published to ${TOPIC}`);
+      console.log(`[producer] ${publishCount} messages published`);
     }
   } catch (e) {
     console.error('[producer] publish error:', e.message);
@@ -44,17 +52,12 @@ async function connectActiveMQ() {
   const client = new StompClient(ACTIVEMQ_HOST, ACTIVEMQ_PORT, 'admin', 'admin');
 
   client.on('error', (err) => {
-    console.error('[producer] ActiveMQ error:', err.message, '— reconnecting in 3s');
+    console.error('[producer] ActiveMQ error:', err.message);
     stomp = null;
     setTimeout(connectActiveMQ, 3000);
   });
-
   client.on('close', () => {
-    if (stomp) {
-      console.log('[producer] ActiveMQ connection closed — reconnecting in 3s');
-      stomp = null;
-      setTimeout(connectActiveMQ, 3000);
-    }
+    if (stomp) { stomp = null; setTimeout(connectActiveMQ, 3000); }
   });
 
   try {
@@ -62,88 +65,126 @@ async function connectActiveMQ() {
     console.log('[producer] ActiveMQ connected');
     stomp = client;
   } catch (err) {
-    console.error('[producer] ActiveMQ connect failed:', err.message, '— retry in 3s');
+    console.error('[producer] ActiveMQ failed:', err.message, '— retry in 3s');
     setTimeout(connectActiveMQ, 3000);
   }
 }
 
-// ── Binance WebSocket ─────────────────────────────────────────────────────────
+// ── Kraken WebSocket ──────────────────────────────────────────────────────────
 
-function connectBinance() {
-  console.log('[producer] connecting to Binance WebSocket…');
-  const ws = new WebSocket(BINANCE_URL);
+// Rolling OHLC candles built from trade stream (Kraken OHLC has a delay)
+const candles = {}; // symbol → current open candle
 
-  ws.on('open', () => console.log('[producer] Binance WebSocket connected'));
+function getCurrentMinute() {
+  return Math.floor(Date.now() / 60000) * 60000;
+}
+
+function updateCandle(symbol, price, quantity) {
+  const openTime = getCurrentMinute();
+  if (!candles[symbol] || candles[symbol].openTime !== openTime) {
+    candles[symbol] = { openTime, closeTime: openTime + 59999, open: price, high: price, low: price, close: price, volume: 0, trades: 0, interval: '1m', closed: false };
+  }
+  const c = candles[symbol];
+  if (price > c.high) c.high = price;
+  if (price < c.low)  c.low  = price;
+  c.close   = price;
+  c.volume += quantity;
+  c.trades++;
+  return { ...c };
+}
+
+function connectKraken() {
+  console.log('[producer] connecting to Kraken WebSocket…');
+  const ws = new WebSocket(KRAKEN_URL);
+
+  ws.on('open', () => {
+    console.log('[producer] Kraken WebSocket connected');
+
+    // Subscribe to trades and tickers for BTC and ETH
+    ws.send(JSON.stringify({
+      method: 'subscribe',
+      params: { channel: 'trade',  symbol: ['BTC/USD', 'ETH/USD'] },
+    }));
+    ws.send(JSON.stringify({
+      method: 'subscribe',
+      params: { channel: 'ticker', symbol: ['BTC/USD', 'ETH/USD'] },
+    }));
+  });
 
   ws.on('message', (raw) => {
-    let envelope;
-    try { envelope = JSON.parse(raw); } catch { return; }
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
 
-    const streamName = envelope.stream || '';
-    const data       = envelope.data   || envelope;
+    // Ignore heartbeats and subscription confirmations
+    if (msg.method || msg.channel === 'status') return;
 
-    if (streamName.includes('@aggTrade')) {
-      const tradePayload = {
-        tradeId:      data.a,
-        price:        parseFloat(data.p),
-        quantity:     parseFloat(data.q),
-        isBuyerMaker: data.m,
-        tradeTime:    data.T,
-      };
+    const channel = msg.channel;
+    const data    = msg.data;
+    if (!Array.isArray(data)) return;
 
-      // Publish to TOPIC — every subscriber (graph-consumer) gets this
-      publish('trade', data.s, tradePayload);
+    // ── Trade stream ──────────────────────────────────────────────────────
+    if (channel === 'trade') {
+      for (const t of data) {
+        const symbol   = toSymbol(t.symbol);
+        const price    = parseFloat(t.price);
+        const quantity = parseFloat(t.qty);
 
-      // Also publish to QUEUE if it's a large trade — only ONE worker gets this
-      const threshold = LARGE_TRADE_THRESHOLDS[data.s];
-      if (threshold && tradePayload.quantity >= threshold) {
-        if (!stomp) return;
-        stomp.publish(QUEUE, JSON.stringify({
-          symbol:    data.s,
-          price:     tradePayload.price,
-          quantity:  tradePayload.quantity,
-          side:      tradePayload.isBuyerMaker ? 'SELL' : 'BUY',
-          tradeTime: tradePayload.tradeTime,
-          usdValue:  parseFloat((tradePayload.price * tradePayload.quantity).toFixed(2)),
-        }));
-        console.log(`[producer] large trade → queue: ${data.s} qty:${tradePayload.quantity}`);
+        // Publish trade to topic (all consumers get it)
+        publish('trade', symbol, {
+          tradeId:      t.trade_id,
+          price,
+          quantity,
+          isBuyerMaker: t.side === 'sell',
+          tradeTime:    new Date(t.timestamp).getTime(),
+        });
+
+        // Publish to kline from accumulated candle data
+        const candle = updateCandle(symbol, price, quantity);
+        publish('kline', symbol, candle);
+
+        // Publish to queue if large trade
+        const krakenSym   = t.symbol;
+        const threshold   = LARGE_TRADE_THRESHOLDS[krakenSym];
+        if (stomp && threshold && quantity >= threshold) {
+          stomp.publish(QUEUE, JSON.stringify({
+            symbol,
+            price,
+            quantity,
+            side:      t.side.toUpperCase(),
+            tradeTime: new Date(t.timestamp).getTime(),
+            usdValue:  parseFloat((price * quantity).toFixed(2)),
+          }));
+          console.log(`[producer] large trade → queue: ${symbol} qty:${quantity}`);
+        }
       }
-    } else if (streamName.includes('@kline')) {
-      const k = data.k;
-      publish('kline', data.s, {
-        openTime:  k.t,
-        closeTime: k.T,
-        open:      parseFloat(k.o),
-        high:      parseFloat(k.h),
-        low:       parseFloat(k.l),
-        close:     parseFloat(k.c),
-        volume:    parseFloat(k.v),
-        trades:    k.n,
-        closed:    k.x,
-        interval:  k.i,
-      });
-    } else if (streamName.includes('@miniTicker')) {
-      publish('ticker', data.s, {
-        close:       parseFloat(data.c),
-        open:        parseFloat(data.o),
-        high:        parseFloat(data.h),
-        low:         parseFloat(data.l),
-        baseVolume:  parseFloat(data.v),
-        quoteVolume: parseFloat(data.q),
-      });
+    }
+
+    // ── Ticker stream ─────────────────────────────────────────────────────
+    if (channel === 'ticker') {
+      for (const t of data) {
+        const symbol = toSymbol(t.symbol);
+        publish('ticker', symbol, {
+          close:       parseFloat(t.last),
+          open:        parseFloat(t.open?.h24 ?? t.last),
+          high:        parseFloat(t.high?.h24 ?? t.last),
+          low:         parseFloat(t.low?.h24 ?? t.last),
+          baseVolume:  parseFloat(t.volume?.h24 ?? 0),
+          quoteVolume: parseFloat(t.vwap?.h24 ? t.vwap.h24 * (t.volume?.h24 ?? 0) : 0),
+        });
+      }
     }
   });
 
   ws.on('ping', (data) => ws.pong(data));
 
   ws.on('close', () => {
-    console.log('[producer] Binance WebSocket closed — reconnecting in 5s');
-    setTimeout(connectBinance, 5000);
+    console.log('[producer] Kraken WebSocket closed — reconnecting in 5s');
+    setTimeout(connectKraken, 5000);
   });
 
-  ws.on('error', (err) => console.error('[producer] Binance error:', err.message));
+  ws.on('error', (err) => console.error('[producer] Kraken error:', err.message));
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-connectActiveMQ().then(connectBinance);
+connectActiveMQ().then(connectKraken);
