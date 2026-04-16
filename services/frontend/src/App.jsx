@@ -3,6 +3,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import PriceChart from './components/PriceChart';
 import TickerBar from './components/TickerBar';
 import TradeFeed from './components/TradeFeed';
+import LargeTradeAlerts from './components/LargeTradeAlerts';
 
 const MAX_TRADES  = 200;
 const MAX_CANDLES = 120;
@@ -85,10 +86,13 @@ export default function App() {
       </div>
 
       {/* Chart + trade feed */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 12, marginBottom: 12 }}>
         <PriceChart candles={candles} symbol={activeSymbol} />
         <TradeFeed trades={trades} symbol={activeSymbol} />
       </div>
+
+      {/* Large trade alerts — comes from queue via REST poll, not WebSocket */}
+      <LargeTradeAlerts />
     </div>
   );
 }

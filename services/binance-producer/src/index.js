@@ -3,7 +3,11 @@ const StompClient = require('./stomp');
 
 const ACTIVEMQ_HOST = process.env.ACTIVEMQ_HOST || 'localhost';
 const ACTIVEMQ_PORT = parseInt(process.env.ACTIVEMQ_PORT || '61613', 10);
-const TOPIC         = '/topic/market.data';
+const TOPIC         = '/topic/market.data';   // all messages → all subscribers
+const QUEUE         = '/queue/large.trades';  // large trades only → one worker at a time
+
+// A "large trade" threshold — BTC qty > 0.5 or ETH qty > 5
+const LARGE_TRADE_THRESHOLDS = { BTCUSDT: 0.5, ETHUSDT: 5 };
 
 const STREAMS = [
   'btcusdt@aggTrade',
@@ -79,13 +83,31 @@ function connectBinance() {
     const data       = envelope.data   || envelope;
 
     if (streamName.includes('@aggTrade')) {
-      publish('trade', data.s, {
+      const tradePayload = {
         tradeId:      data.a,
         price:        parseFloat(data.p),
         quantity:     parseFloat(data.q),
         isBuyerMaker: data.m,
         tradeTime:    data.T,
-      });
+      };
+
+      // Publish to TOPIC — every subscriber (graph-consumer) gets this
+      publish('trade', data.s, tradePayload);
+
+      // Also publish to QUEUE if it's a large trade — only ONE worker gets this
+      const threshold = LARGE_TRADE_THRESHOLDS[data.s];
+      if (threshold && tradePayload.quantity >= threshold) {
+        if (!stomp) return;
+        stomp.publish(QUEUE, JSON.stringify({
+          symbol:    data.s,
+          price:     tradePayload.price,
+          quantity:  tradePayload.quantity,
+          side:      tradePayload.isBuyerMaker ? 'SELL' : 'BUY',
+          tradeTime: tradePayload.tradeTime,
+          usdValue:  parseFloat((tradePayload.price * tradePayload.quantity).toFixed(2)),
+        }));
+        console.log(`[producer] large trade → queue: ${data.s} qty:${tradePayload.quantity}`);
+      }
     } else if (streamName.includes('@kline')) {
       const k = data.k;
       publish('kline', data.s, {

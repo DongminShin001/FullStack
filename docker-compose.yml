@@ -40,6 +40,21 @@ services:
       - activemq
     restart: unless-stopped
 
+  # ── Reads from /queue/large.trades, exposes REST API ─────────────────────────
+  trade-worker:
+    build: ./services/trade-worker
+    ports:
+      - "3003:3003"
+    environment:
+      - ACTIVEMQ_HOST=activemq
+      - ACTIVEMQ_PORT=61613
+      - PORT=3003
+    volumes:
+      - ./services/trade-worker/src:/app/src
+    depends_on:
+      - activemq
+    restart: unless-stopped
+
   # ── React frontend ────────────────────────────────────────────────────────────
   frontend:
     build: ./services/frontend
@@ -47,6 +62,7 @@ services:
       - "5173:5173"
     environment:
       - VITE_WS_URL=ws://localhost:3002
+      - VITE_WORKER_URL=http://localhost:3003
     volumes:
       - ./services/frontend/src:/app/src
       - ./services/frontend/index.html:/app/index.html
