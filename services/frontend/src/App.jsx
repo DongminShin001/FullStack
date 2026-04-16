@@ -4,6 +4,7 @@ import PriceChart from './components/PriceChart';
 import TickerBar from './components/TickerBar';
 import TradeFeed from './components/TradeFeed';
 import LargeTradeAlerts from './components/LargeTradeAlerts';
+import DspView from './pages/DspView';
 
 const MAX_TRADES  = 200;
 const MAX_CANDLES = 120;
@@ -16,6 +17,7 @@ export default function App() {
   const [ethCandles, setEthCandles] = useState([]);
   const [trades, setTrades]         = useState([]);
   const [activeSymbol, setActiveSymbol] = useState('BTCUSDT');
+  const [view, setView] = useState('market'); // 'market' | 'dsp'
 
   const onTicker = useCallback((msg) => {
     setTickers(prev => ({ ...prev, [msg.symbol]: msg.payload }));
@@ -43,9 +45,35 @@ export default function App() {
 
   const candles = activeSymbol === 'BTCUSDT' ? btcCandles : ethCandles;
 
-  return (
-    <div style={{ minHeight: '100vh', background: '#0a0e1a', padding: 16, fontFamily: "'Courier New', monospace" }}>
+  if (view === 'dsp') return (
+    <div style={{ fontFamily: "'Courier New', monospace" }}>
+      <div style={{ background: '#050810', padding: '8px 16px', display: 'flex', gap: 8 }}>
+        {['market', 'dsp'].map(v => (
+          <button key={v} onClick={() => setView(v)} style={{
+            background: view === v ? '#1e4a8f' : 'transparent',
+            border: `1px solid ${view === v ? '#3a8adf' : '#1e3a5f'}`,
+            color: view === v ? '#7eb8f7' : '#4a6080',
+            borderRadius: 4, padding: '3px 12px', cursor: 'pointer', fontSize: 11,
+          }}>{v === 'market' ? 'MARKET' : 'DSP PIPELINE'}</button>
+        ))}
+      </div>
+      <DspView />
+    </div>
+  );
 
+  return (
+    <div style={{ minHeight: '100vh', background: '#0a0e1a', fontFamily: "'Courier New', monospace" }}>
+      <div style={{ background: '#050810', padding: '8px 16px', display: 'flex', gap: 8, marginBottom: 0 }}>
+        {['market', 'dsp'].map(v => (
+          <button key={v} onClick={() => setView(v)} style={{
+            background: view === v ? '#1e4a8f' : 'transparent',
+            border: `1px solid ${view === v ? '#3a8adf' : '#1e3a5f'}`,
+            color: view === v ? '#7eb8f7' : '#4a6080',
+            borderRadius: 4, padding: '3px 12px', cursor: 'pointer', fontSize: 11,
+          }}>{v === 'market' ? 'MARKET' : 'DSP PIPELINE'}</button>
+        ))}
+      </div>
+    <div style={{ padding: 16 }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div>
@@ -93,6 +121,7 @@ export default function App() {
 
       {/* Large trade alerts — comes from queue via REST poll, not WebSocket */}
       <LargeTradeAlerts />
+    </div>
     </div>
   );
 }

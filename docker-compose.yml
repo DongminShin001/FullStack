@@ -40,6 +40,34 @@ services:
       - activemq
     restart: unless-stopped
 
+  # ── Satellite data generator (PSD/CAF simulation) ────────────────────────────
+  satellite-producer:
+    build: ./services/satellite-producer
+    environment:
+      - ACTIVEMQ_HOST=activemq
+      - ACTIVEMQ_PORT=61613
+      - PUBLISH_INTERVAL_MS=100
+    volumes:
+      - ./services/satellite-producer/src:/app/src
+    depends_on:
+      - activemq
+    restart: unless-stopped
+
+  # ── DSP service: normalizes raw data, sends binary Float32 to frontend ────────
+  dsp-service:
+    build: ./services/dsp-service
+    ports:
+      - "3004:3004"
+    environment:
+      - ACTIVEMQ_HOST=activemq
+      - ACTIVEMQ_PORT=61613
+      - PORT=3004
+    volumes:
+      - ./services/dsp-service/src:/app/src
+    depends_on:
+      - activemq
+    restart: unless-stopped
+
   # ── Reads from /queue/large.trades, exposes REST API ─────────────────────────
   trade-worker:
     build: ./services/trade-worker
@@ -63,6 +91,7 @@ services:
     environment:
       - VITE_WS_URL=ws://localhost:3002
       - VITE_WORKER_URL=http://localhost:3003
+      - VITE_DSP_URL=ws://localhost:3004
     volumes:
       - ./services/frontend/src:/app/src
       - ./services/frontend/index.html:/app/index.html
